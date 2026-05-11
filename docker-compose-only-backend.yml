@@ -1,0 +1,87 @@
+version: "3.12"
+
+x-common: &common
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: final
+  image: agent-system:latest
+  environment:
+    - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    - WORKSPACE=/tmp/agent_workspace
+  volumes:
+    - agent_workspace:/tmp/agent_workspace
+
+services:
+
+  # ── API server (default / production) ────────────────────────────────────────
+  api:
+    <<: *common
+    container_name: agent-api
+    command: api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - API_WORKERS=${API_WORKERS:-2}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    profiles: [api, default]
+
+  # ── Dev server (hot-reload, single worker) ───────────────────────────────────
+  api-dev:
+    <<: *common
+    container_name: agent-api-dev
+    command: api-dev
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - agent_workspace:/tmp/agent_workspace
+      - .:/app                   # mount source for hot-reload
+    profiles: [dev]
+
+  # ── One-shot solver ──────────────────────────────────────────────────────────
+  solver:
+    <<: *common
+    container_name: agent-solver
+    command: solve
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - REQUIREMENT=${REQUIREMENT:-Analyze the data and write a brief summary}
+      - CONTEXT_JSON=${CONTEXT_JSON:-}
+    profiles: [solver]
+
+  # ── Smoke tests ──────────────────────────────────────────────────────────────
+  test:
+    <<: *common
+    container_name: agent-test
+    command: test
+    environment:
+      - ANTHROPIC_API_KEY=dummy
+    profiles: [test]
+
+  # ── Interactive shell ────────────────────────────────────────────────────────
+  shell:
+    <<: *common
+    container_name: agent-shell
+    command: shell
+    stdin_open: true
+    tty: true
+    volumes:
+      - agent_workspace:/tmp/agent_workspace
+      - .:/app/src:ro
+    profiles: [shell]
+
+volumes:
+  agent_workspace:
+    driver: local

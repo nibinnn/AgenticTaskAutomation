@@ -1,0 +1,133 @@
+version: "3.9"
+
+x-api-common: &api-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: final
+  image: agent-system-api:latest
+  environment:
+    - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    - WORKSPACE=/tmp/agent_workspace
+  volumes:
+    - agent_workspace:/tmp/agent_workspace
+
+services:
+
+  # ── FastAPI backend ──────────────────────────────────────────────────────────
+  api:
+    <<: *api-common
+    container_name: agent-api
+    command: api
+    ports:
+      - "8000:8000"        # exposed for direct access / Swagger UI
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - API_WORKERS=${API_WORKERS:-2}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - agent-net
+
+  # ── React frontend (nginx) ───────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: agent-system-frontend:latest
+    container_name: agent-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - agent-net
+
+  # ── Dev: hot-reload API ──────────────────────────────────────────────────────
+  api-dev:
+    <<: *api-common
+    container_name: agent-api-dev
+    command: api-dev
+    ports:
+      - "8000:8000"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - agent_workspace:/tmp/agent_workspace
+      - .:/app
+    networks:
+      - agent-net
+    profiles: [dev]
+
+  # ── Dev: Vite dev server ─────────────────────────────────────────────────────
+  frontend-dev:
+    image: node:20-alpine
+    container_name: agent-frontend-dev
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    networks:
+      - agent-net
+    profiles: [dev]
+
+  # ── One-shot solver ──────────────────────────────────────────────────────────
+  solver:
+    <<: *api-common
+    container_name: agent-solver
+    command: solve
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - REQUIREMENT=${REQUIREMENT:-Analyze the data and write a brief summary}
+      - CONTEXT_JSON=${CONTEXT_JSON:-}
+    networks:
+      - agent-net
+    profiles: [solver]
+
+  # ── Smoke tests ──────────────────────────────────────────────────────────────
+  test:
+    <<: *api-common
+    container_name: agent-test
+    command: test
+    environment:
+      - ANTHROPIC_API_KEY=dummy
+    networks:
+      - agent-net
+    profiles: [test]
+
+  # ── Shell ────────────────────────────────────────────────────────────────────
+  shell:
+    <<: *api-common
+    container_name: agent-shell
+    command: shell
+    stdin_open: true
+    tty: true
+    volumes:
+      - agent_workspace:/tmp/agent_workspace
+      - .:/app/src:ro
+    networks:
+      - agent-net
+    profiles: [shell]
+
+networks:
+  agent-net:
+    driver: bridge
+
+volumes:
+  agent_workspace:
+    driver: local
